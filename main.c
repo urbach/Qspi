@@ -42,12 +42,13 @@ MUSPI_Pt2PtMemoryFIFODescriptorInfo_t x_fifo_info[2];
 MUSPI_Pt2PtMemoryFIFODescriptorInfo_t y_fifo_info[2];
 MUSPI_Pt2PtMemoryFIFODescriptorInfo_t z_fifo_info[2];
 
-uint64_t * tsend_buf, trecv_buf;
-uint64_t * xsend_buf, xrecv_buf;
-uint64_t * ysend_buf, yrecv_buf;
-uint64_t * zsend_buf, zrecv_buf;
+double * tsend_buf, * trecv_buf;
+double * xsend_buf, * xrecv_buf;
+double * ysend_buf, * yrecv_buf;
+double * zsend_buf, * zrecv_buf;
 
 int g_proc_id, g_nproc, g_cart_id, g_proc_coords[4], g_nb_list[8];
+int g_nproc_t, g_nproc_x, g_nproc_y, g_nproc_z;
 MPI_Comm g_cart_grid;
 int g_nb_x_up, g_nb_x_dn;
 int g_nb_y_up, g_nb_y_dn;
@@ -64,6 +65,9 @@ int main (int argc,char *argv[]) {
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &g_proc_id);
 
+  int periods[] = {1,1,1,1};
+  int namelen;
+  int ndims = 4;
   int dims[4];
   int nalldims = 4;
   dims[0] = 4;
@@ -103,18 +107,65 @@ int main (int argc,char *argv[]) {
   g_nb_list[7] = g_nb_z_dn;
 
 
-  int my_a = 0, my_b = 0, my_c = 0, my_d = 0, my_e = 0;
-  my_a = pers.Network_Config.Acoord;
-  my_b = pers.Network_Config.Bcoord;
-  my_c = pers.Network_Config.Ccoord;
-  my_d = pers.Network_Config.Dcoord;
-  my_e = pers.Network_Config.Ecoord;
+  int my_c[6] = {0,0,0,0,0,0};
+  int nbtplus[6], nbtminus[6];
+  int nbxplus[6], nbxminus[6];
+  int nbyplus[6], nbyminus[6];
+  int nbzplus[6], nbzminus[6];
+  my_c[0] = pers.Network_Config.Acoord;
+  my_c[1] = pers.Network_Config.Bcoord;
+  my_c[2] = pers.Network_Config.Ccoord;
+  my_c[3] = pers.Network_Config.Dcoord;
+  my_c[4] = pers.Network_Config.Ecoord;
+  my_c[5] = 0;//pers.Network_config.Tcoord;
 
-  fprintf(stdout,"# Process %d of %d on %s: cart_id %d, coordinates (%d %d %d %d)\n# Process %d has personality %d %d %d %d %d\n",
+  fprintf(stdout,"# MPI Process %d of %d on %s: cart_id %d, coordinates (%d %d %d %d)\n# MPI Process %d has personality %d %d %d %d %d %d\n",
 	  g_proc_id, g_nproc, processor_name, g_cart_id, 
 	  g_proc_coords[0], g_proc_coords[1], g_proc_coords[2], g_proc_coords[3],
-	  g_proc_id, my_a, my_b, my_c, my_d, my_e);
+	  g_proc_id, my_c[0], my_c[1], my_c[2], my_c[3], my_c[4], my_c[5]);
   fflush(stdout);
+
+  MPI_Status mstatus;
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_t_up, 0, 
+	       (void*)nbtminus, 6, MPI_INT, g_nb_t_dn, 0,
+	       g_cart_grid, &mstatus);
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_t_dn, 1, 
+		 (void*)nbtplus, 6, MPI_INT, g_nb_t_up, 1, 
+		 g_cart_grid, &mstatus);
+
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_x_up, 2, 
+		 (void*)nbxminus, 6, MPI_INT, g_nb_x_dn, 2, 
+		 g_cart_grid, &mstatus);
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_x_dn, 3, 
+		 (void*)nbxplus, 6, MPI_INT, g_nb_x_up, 3, 
+		 g_cart_grid, &mstatus);
+
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_y_up, 4, 
+		 (void*)nbyminus, 6, MPI_INT, g_nb_y_dn, 4, 
+		 g_cart_grid, &mstatus);
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_y_dn, 5, 
+		 (void*)nbyplus, 6, MPI_INT, g_nb_y_up, 5, 
+		 g_cart_grid, &mstatus);
+
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_z_up, 6, 
+		 (void*)nbzminus, 6, MPI_INT, g_nb_z_dn, 6, 
+		 g_cart_grid, &mstatus);
+  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_z_dn, 7, 
+		 (void*)nbzplus, 6, MPI_INT, g_nb_z_up, 7, 
+		 g_cart_grid, &mstatus);
+
+  if(g_proc_id == 0) {
+    printf("my coords (%d %d %d %d)\n", g_proc_coords[0], g_proc_coords[1], g_proc_coords[2], g_proc_coords[3]);
+    printf("my kernel %d %d %d %d %d\n", my_c[0], my_c[1], my_c[2], my_c[3], my_c[4]);
+    printf("my tplus  %d %d %d %d %d\n", nbtplus[0], nbtplus[1], nbtplus[2], nbtplus[3], nbtplus[4]);
+    printf("my tminus  %d %d %d %d %d\n", nbtminus[0], nbtminus[1], nbtminus[2], nbtminus[3], nbtminus[4]);
+    printf("my xplus  %d %d %d %d %d\n", nbxplus[0], nbxplus[1], nbxplus[2], nbxplus[3], nbxplus[4]);
+    printf("my xminus  %d %d %d %d %d\n", nbxminus[0], nbxminus[1], nbxminus[2], nbxminus[3], nbxminus[4]);
+    printf("my yplus  %d %d %d %d %d\n", nbyplus[0], nbyplus[1], nbyplus[2], nbyplus[3], nbyplus[4]);
+    printf("my yminus  %d %d %d %d %d\n", nbyminus[0], nbyminus[1], nbyminus[2], nbyminus[3], nbyminus[4]);
+    printf("my zplus  %d %d %d %d %d\n", nbzplus[0], nbzplus[1], nbzplus[2], nbzplus[3], nbzplus[4]);
+    printf("my zminus  %d %d %d %d %d\n", nbzminus[0], nbzminus[1], nbzminus[2], nbzminus[3], nbzminus[4]);
+  }
 
 
   MPI_Finalize();
