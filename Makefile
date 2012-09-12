@@ -1,2 +1,2 @@
 a.out: main.c spi.h
-	mpicc_r main.c -lpthread
+	mpixlc_r main.c -lpthread
