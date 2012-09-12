@@ -1,56 +1,57 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <stdint.h>
-#include <malloc.h>
-#include <assert.h>
-#include <string.h>
+/* begin_generated_IBM_copyright_prolog                             */
+/*                                                                  */
+/* This is an automatically generated copyright prolog.             */
+/* After initializing,  DO NOT MODIFY OR MOVE                       */
+/* ================================================================ */
+/*                                                                  */
+/* Licensed Materials - Property of IBM                             */
+/*                                                                  */
+/* Blue Gene/Q                                                      */
+/*                                                                  */
+/* (C) Copyright IBM Corp.  2008, 2012                              */
+/*                                                                  */
+/* US Government Users Restricted Rights -                          */
+/* Use, duplication or disclosure restricted                        */
+/* by GSA ADP Schedule Contract with IBM Corp.                      */
+/*                                                                  */
+/* This software is available to you under the                      */
+/* Eclipse Public License (EPL).                                    */
+/*                                                                  */
+/* ================================================================ */
+/*                                                                  */
+/* end_generated_IBM_copyright_prolog                               */
+
+
+///////////////////////////////////////////////////// 
+////////   Memory Fifo Ping Pong test  //////////////
+/////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////
+////////  Test library common code  /////////////////
+/////////////////////////////////////////////////////
+#include "msg_common.h"
 #include <mpi.h>
-#include <omp.h>
 
-// Basic SPI and HWI includes
-#include <hwi/include/bqc/A2_core.h>
-#include <hwi/include/bqc/A2_inlines.h>
-#include <hwi/include/bqc/MU_PacketCommon.h>
-#include <firmware/include/personality.h>
-#include <spi/include/mu/Descriptor.h>
-#include <spi/include/mu/Descriptor_inlines.h>
-#include <spi/include/mu/InjFifo.h>
-#include <spi/include/mu/RecFifo.h>
-#include <spi/include/mu/Addressing.h>
-#include <spi/include/mu/Addressing_inlines.h>
-#include <spi/include/mu/GIBarrier.h>
-#include <spi/include/kernel/MU.h>
-#include <spi/include/kernel/process.h>
-#include <spi/include/kernel/location.h>
-#include <spi/include/kernel/collective.h>
-#include "spi.h"
+// The ping and pong functions
+int ping (int a, int b, int c, int d, int e, int t, int bytes, int my_t);
+int pong (int a, int b, int c, int d, int e, int t, int bytes, int my_t);
 
-int send(int * my_c, int bytes);
-int recv();
+#define NUM_LOOPS   1000
 
-#define ALIGN __attribute__((__aligned__(64)))
 #define MAX_MESSAGE_SIZE              8192            // Multiple of 8
 #define REC_MEMORY_FIFO_SIZE          0x00000FFFFULL  // 64K bytes
 #define INJ_MEMORY_FIFO_SIZE          0x00000FFFFULL  // 64K bytes
 
-
-
 // Injection Memory FIFO Descriptor
-MUHWI_Descriptor_t t_fifo[2] ALIGN;
-MUHWI_Descriptor_t x_fifo[2] ALIGN;
-MUHWI_Descriptor_t y_fifo[2] ALIGN;
-MUHWI_Descriptor_t z_fifo[2] ALIGN;
-
-MUSPI_InjFifoSubGroup_t   ififo_subgroup[1];
-MUSPI_RecFifoSubGroup_t   rfifo_subgroup[1];
+MUHWI_Descriptor_t mu_iMemoryFifoDescriptor[2] __attribute__((__aligned__(64))) ;
 
 // Injection Memory FIFO Descriptor Information Structures
-MUSPI_Pt2PtMemoryFIFODescriptorInfo_t t_fifo_info[2];
-MUSPI_Pt2PtMemoryFIFODescriptorInfo_t x_fifo_info[2];
-MUSPI_Pt2PtMemoryFIFODescriptorInfo_t y_fifo_info[2];
-MUSPI_Pt2PtMemoryFIFODescriptorInfo_t z_fifo_info[2];
+MUSPI_Pt2PtMemoryFIFODescriptorInfo_t mu_iMemoryFifoDescriptorInfo[2];
 
+/**
+ * \brief Context for book-keeping on the receiver to process incoming
+ * packets.
+ */
 typedef struct MsgContext {
   int    done;
   int    size;
@@ -61,6 +62,11 @@ typedef struct MsgContext {
 
 MsgContext_t   my_recv_context[2];  /** Store receive context */
 
+/**
+ * \brief Receive packet callback handler. SPIs can poll FIFOs and
+ * call a user defined dispatch callback. The packet header carries
+ * the dipatch id. 
+ */
 int recv_packet (void                       * param,
 		 MUHWI_PacketHeader_t       * hdr,
 		 uint32_t                     bytes) 
@@ -93,11 +99,32 @@ int recv_packet (void                       * param,
   return 0;
 }
 
+MUSPI_InjFifoSubGroup_t   ififo_subgroup[2];
+MUSPI_RecFifoSubGroup_t   rfifo_subgroup[2];
 
-double tsend_buf[MAX_MESSAGE_SIZE/sizeof(double)], trecv_buf[MAX_MESSAGE_SIZE/sizeof(double)];
-double xsend_buf[MAX_MESSAGE_SIZE/sizeof(double)], xrecv_buf[MAX_MESSAGE_SIZE/sizeof(double)];
-double ysend_buf[MAX_MESSAGE_SIZE/sizeof(double)], yrecv_buf[MAX_MESSAGE_SIZE/sizeof(double)];
-double zsend_buf[MAX_MESSAGE_SIZE/sizeof(double)], zrecv_buf[MAX_MESSAGE_SIZE/sizeof(double)];
+//The source of the ping pong message
+int   ROOT_A = 0;
+int   ROOT_B = 0;
+int   ROOT_C = 0;
+int   ROOT_D = 0;
+int   ROOT_E = 0;
+int   ROOT_T = 0;
+
+//The address of the neighbor that bounces it back
+int   NEIGHBOR_A = 0;
+int   NEIGHBOR_B = 0;
+int   NEIGHBOR_C = 1;
+int   NEIGHBOR_D = 0;
+int   NEIGHBOR_E = 0;
+int   NEIGHBOR_T = 0;
+
+// allocates area for message send buffer
+uint64_t sbuf[MAX_MESSAGE_SIZE/sizeof(uint64_t)];
+
+// allocates area for message recv buffer
+uint64_t rbuf[MAX_MESSAGE_SIZE/sizeof(uint64_t)];
+
+#define test_exit  exit
 
 int g_proc_id, g_nproc, g_cart_id, g_proc_coords[4], g_nb_list[8];
 int g_nproc_t, g_nproc_x, g_nproc_y, g_nproc_z;
@@ -108,12 +135,16 @@ int g_nb_t_up, g_nb_t_dn;
 int g_nb_z_up, g_nb_z_dn;
 
 
-int main (int argc,char *argv[]) {
-  Personality_t pers;
-  char processor_name[MPI_MAX_PROCESSOR_NAME];
-  Kernel_GetPersonality(&pers, sizeof(pers));
-  int g_proc_id;
 
+int main(int argc, char **argv)
+{
+  int rc;
+  Personality_t pers;
+  //works in cnk ?
+  Kernel_GetPersonality(&pers, sizeof(pers));
+
+  int g_proc_id;
+  char processor_name[MPI_MAX_PROCESSOR_NAME];
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &g_proc_id);
 
@@ -159,17 +190,15 @@ int main (int argc,char *argv[]) {
   g_nb_list[7] = g_nb_z_dn;
 
 
-  int my_c[6] = {0,0,0,0,0,0};
-  int nbtplus[6], nbtminus[6];
-  int nbxplus[6], nbxminus[6];
-  int nbyplus[6], nbyminus[6];
-  int nbzplus[6], nbzminus[6];
-  my_c[0] = pers.Network_Config.Acoord;
-  my_c[1] = pers.Network_Config.Bcoord;
-  my_c[2] = pers.Network_Config.Ccoord;
-  my_c[3] = pers.Network_Config.Dcoord;
-  my_c[4] = pers.Network_Config.Ecoord;
-  my_c[5] = Kernel_PhysicalProcessorID();
+  int32_t     my_a = 0;
+  int32_t     my_b = 0;
+  int32_t     my_c = 0;
+  int32_t     my_d = 0;
+  int32_t     my_e = 0;
+  int32_t     my_t = 0;  //Set from kernel sys call
+  uint i = 0;
+  uint64_t gi_timeout = 1600000000; // about 1 sec at 16 mhz
+  gi_timeout *= 30;
 
   char rec_memory_fifo_buffer[REC_MEMORY_FIFO_SIZE+32];
   void *rec_memory_fifo = (void*)(rec_memory_fifo_buffer);
@@ -177,48 +206,62 @@ int main (int argc,char *argv[]) {
   char inj_memory_fifo_buffer[INJ_MEMORY_FIFO_SIZE+64];
   void *inj_memory_fifo = (void*)( ((uint64_t)inj_memory_fifo_buffer + 64)  & ~(63UL) );
 
+  my_a = pers.Network_Config.Acoord;
+  my_b = pers.Network_Config.Bcoord;
+  my_c = pers.Network_Config.Ccoord;
+  my_d = pers.Network_Config.Dcoord;
+  my_e = pers.Network_Config.Ecoord;
 
-  if(my_c[5] > 0) {
-    fprintf(stderr, "Error! We assume one process per core!\n");
-  }
+  //Assume atomst one process per core
+  my_t = Kernel_PhysicalProcessorID ();
+  
+  if (my_t > 1)
+    my_t = 1;
+
   fprintf(stdout,"# MPI Process %d of %d on %s: cart_id %d, coordinates (%d %d %d %d)\n# MPI Process %d has personality %d %d %d %d %d %d\n",
 	  g_proc_id, g_nproc, processor_name, g_cart_id, 
 	  g_proc_coords[0], g_proc_coords[1], g_proc_coords[2], g_proc_coords[3],
-	  g_proc_id, my_c[0], my_c[1], my_c[2], my_c[3], my_c[4], my_c[5]);
+	  g_proc_id, my_a, my_b, my_c, my_d, my_e, my_t);
   fflush(stdout);
 
+  int mypers[6];
+  mypers[0] = my_a; mypers[1] = my_b;  mypers[2] = my_c;  mypers[3] = my_d;  mypers[4] = my_e; mypers[5] = my_t;
+  int nbtplus[6], nbtminus[6];
+  int nbxplus[6], nbxminus[6];
+  int nbyplus[6], nbyminus[6];
+  int nbzplus[6], nbzminus[6];
   MPI_Status mstatus;
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_t_up, 0, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_t_up, 0, 
 	       (void*)nbtminus, 6, MPI_INT, g_nb_t_dn, 0,
 	       g_cart_grid, &mstatus);
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_t_dn, 1, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_t_dn, 1, 
 	       (void*)nbtplus, 6, MPI_INT, g_nb_t_up, 1, 
 	       g_cart_grid, &mstatus);
   
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_x_up, 2, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_x_up, 2, 
 	       (void*)nbxminus, 6, MPI_INT, g_nb_x_dn, 2, 
 	       g_cart_grid, &mstatus);
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_x_dn, 3, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_x_dn, 3, 
 	       (void*)nbxplus, 6, MPI_INT, g_nb_x_up, 3, 
 	       g_cart_grid, &mstatus);
   
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_y_up, 4, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_y_up, 4, 
 	       (void*)nbyminus, 6, MPI_INT, g_nb_y_dn, 4, 
 	       g_cart_grid, &mstatus);
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_y_dn, 5, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_y_dn, 5, 
 	       (void*)nbyplus, 6, MPI_INT, g_nb_y_up, 5, 
 	       g_cart_grid, &mstatus);
   
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_z_up, 6, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_z_up, 6, 
 	       (void*)nbzminus, 6, MPI_INT, g_nb_z_dn, 6, 
 	       g_cart_grid, &mstatus);
-  MPI_Sendrecv((void*)my_c, 6, MPI_INT, g_nb_z_dn, 7, 
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_z_dn, 7, 
 	       (void*)nbzplus, 6, MPI_INT, g_nb_z_up, 7, 
 	       g_cart_grid, &mstatus);
   
   if(g_proc_id == 0) {
     printf("my coords (%d %d %d %d)\n", g_proc_coords[0], g_proc_coords[1], g_proc_coords[2], g_proc_coords[3]);
-    printf("my kernel %d %d %d %d %d\n", my_c[0], my_c[1], my_c[2], my_c[3], my_c[4]);
+    printf("my kernel %d %d %d %d %d\n", my_a, my_b, my_c, my_d, my_e);
     printf("my tplus  %d %d %d %d %d\n", nbtplus[0], nbtplus[1], nbtplus[2], nbtplus[3], nbtplus[4]);
     printf("my tminus  %d %d %d %d %d\n", nbtminus[0], nbtminus[1], nbtminus[2], nbtminus[3], nbtminus[4]);
     printf("my xplus  %d %d %d %d %d\n", nbxplus[0], nbxplus[1], nbxplus[2], nbxplus[3], nbxplus[4]);
@@ -228,97 +271,170 @@ int main (int argc,char *argv[]) {
     printf("my zplus  %d %d %d %d %d\n", nbzplus[0], nbzplus[1], nbzplus[2], nbzplus[3], nbzplus[4]);
     printf("my zminus  %d %d %d %d %d\n", nbzminus[0], nbzminus[1], nbzminus[2], nbzminus[3], nbzminus[4]);
   }
+
+
+  int _root = 0, _neighbor = 0; 
+
+  if (my_a == ROOT_A &&
+      my_b == ROOT_B &&
+      my_c == ROOT_C &&
+      my_d == ROOT_D &&
+      my_e == ROOT_E &&
+      my_t == ROOT_T)
+    {
+      printf("We are the root node with coords %d %d %d %d %d %d sending to coords %d %d %d %d %d %d\n",my_a,my_b,my_c,my_d,my_e,my_t,NEIGHBOR_A,NEIGHBOR_B,NEIGHBOR_C,NEIGHBOR_D,NEIGHBOR_E,NEIGHBOR_T);
+      _root = 1;
+    }
+  else if (my_a == NEIGHBOR_A &&
+	   my_b == NEIGHBOR_B &&
+	   my_c == NEIGHBOR_C &&
+	   my_d == NEIGHBOR_D &&
+	   my_e == NEIGHBOR_E &&
+	   my_t == NEIGHBOR_T)
+    {
+      printf("We are the neighbor node with coords %d %d %d %d %d %d\n",my_a,my_b,my_c,my_d,my_e,my_t);      
+      _neighbor = 1;
+    }
+
+  // Initializes the send buffer
+  for (i=0;i<MAX_MESSAGE_SIZE/8;i++) 
+    sbuf [i] = (uint64_t)(i+4) + 0x0100000000000000ull;
   
-  
-  // set the send buffer to definite state
-  for(int i = 0; i < MAX_MESSAGE_SIZE/sizeof(double); i++) {
-    tsend_buf[i] = (double)g_cart_id;
-    xsend_buf[i] = (double)g_cart_id;
-    ysend_buf[i] = (double)g_cart_id;
-    zsend_buf[i] = (double)g_cart_id;
+  // clears the recv buffer
+  for (i=0;i<MAX_MESSAGE_SIZE/8;i++)
+  {
+    rbuf[i] = 0x00;
   }
   
-  
-  // Initialize Injection FIFOs 
+  // Initialize Injection FIFOs
   uint32_t fifoid = 0;  
   Kernel_InjFifoAttributes_t injFifoAttrs[1];
   injFifoAttrs[0].RemoteGet = 0;
   injFifoAttrs[0].System    = 0;  
-  int rc = Kernel_AllocateInjFifos (my_c[5],
-				    &ififo_subgroup[my_c[5]], 
-				    1,
-				    &fifoid, 
-				    injFifoAttrs);
+  rc = Kernel_AllocateInjFifos (my_t,
+				&ififo_subgroup[my_t], 
+				1,
+				&fifoid, 
+				injFifoAttrs);
   
-  // Map virtual address
+  /// Map virtual address
   Kernel_MemoryRegion_t  mregion;
   Kernel_CreateMemoryRegion (&mregion,inj_memory_fifo,INJ_MEMORY_FIFO_SIZE+1);
-  Kernel_InjFifoInit (&ififo_subgroup[my_c[5]], 
+  Kernel_InjFifoInit (&ififo_subgroup[my_t], 
 		      fifoid, 
 		      &mregion, 
 		      (uint64_t)inj_memory_fifo - (uint64_t)mregion.BaseVa, 
 		      INJ_MEMORY_FIFO_SIZE);    
-  Kernel_InjFifoActivate (&ififo_subgroup[my_c[5]], 1, &fifoid, KERNEL_INJ_FIFO_ACTIVATE);    
+  Kernel_InjFifoActivate (&ififo_subgroup[my_t], 1, &fifoid, KERNEL_INJ_FIFO_ACTIVATE);    
   
   // Initialize Reception FIFOs
   uint32_t rfifoid = 0;
-  memset (&my_recv_context[my_c[5]], 0, sizeof(my_recv_context[0]));  
-  MUSPI_RegisterRecvFunction (recv_packet, &my_recv_context[my_c[5]], my_c[5]+1);
-  my_recv_context[my_c[5]].buf = (char *) trecv_buf;  
+  memset (&my_recv_context[my_t], 0, sizeof(my_recv_context[0]));  
+  MUSPI_RegisterRecvFunction (recv_packet, &my_recv_context[my_t], my_t+1);
+  my_recv_context[my_t].buf = (char *) rbuf;  
   Kernel_CreateMemoryRegion (&mregion, rec_memory_fifo, REC_MEMORY_FIFO_SIZE);
   Kernel_RecFifoAttributes_t recFifoAttrs[1];
   recFifoAttrs[0].System = 0;
-  
-  Kernel_AllocateRecFifos (my_c[5], 
-			   &rfifo_subgroup[my_c[5]], 
+
+  Kernel_AllocateRecFifos (my_t, 
+			   &rfifo_subgroup[my_t], 
 			   1,
 			   &rfifoid,
 			   recFifoAttrs);
   
-  Kernel_RecFifoInit    (& rfifo_subgroup[my_c[5]], rfifoid, 
+  Kernel_RecFifoInit    (& rfifo_subgroup[my_t], rfifoid, 
 			 &mregion, 
 			 (uint64_t)rec_memory_fifo - (uint64_t)mregion.BaseVa, 
 			 REC_MEMORY_FIFO_SIZE);
-  
+
   uint64_t recFifoEnableBits=0;
   
   recFifoEnableBits |= ( 0x0000000000000001ULL << 
-			 ( 15 - ( (my_c[5]/*sgid*/*BGQ_MU_NUM_REC_FIFOS_PER_SUBGROUP) + 0/*RecFifoId*/ )) );
-  
+			 ( 15 - ( (my_t/*sgid*/*BGQ_MU_NUM_REC_FIFOS_PER_SUBGROUP) + 0/*RecFifoId*/ )) );
+
   Kernel_RecFifoEnable ( 0, /* Group ID */ 
 			 recFifoEnableBits );
-
-  if(g_proc_id == 0) printf("before %e\n", trecv_buf[0]);
-  send(nbtplus, 8);
-  recv();
-  if(g_proc_id == 0) printf("after %e\n", trecv_buf[0]);
-
+  
+  // Initialize GI Barrier
+  //  MUSPI_GIBarrier_t GIBarrier;  
+  // Initialize the barrier, resetting the hardware.
+  //rc = MUSPI_GIBarrierInit ( &GIBarrier, 0 /* classRouteId */ );
+  //if (rc)
+  //  {
+  //    printf("MUSPI_GIBarrierInit for class route %u returned rc = %d\n",0, rc);
+  //    test_exit(__LINE__);
+  //  }  
+  //if (rc) test_exit(__LINE__);
+  
+  // Enter the MU barrier
+  //rc = MUSPI_GIBarrierEnter ( &GIBarrier );
+  //if (rc)
+  //  {
+  //    printf("MUSPI_GIBarrierEnter failed on iteration = %d, returned rc = %d\n", i, rc);
+  //    test_exit(1);
+  //  }
+  
+  // Poll for completion of the barrier.
+  //rc = MUSPI_GIBarrierPollWithTimeout ( &GIBarrier, gi_timeout);
+  //if ( rc )
+  //  {
+  //    printf("MUSPI_GIBarrierPollWithTimeout failed on iteration = %d, returned rc = %d\n", i, rc);
+  //    test_exit(1);
+  //  }
+  
+  // Test ping pong
+  if (_root)
+    ping (NEIGHBOR_A, NEIGHBOR_B, NEIGHBOR_C, NEIGHBOR_D, NEIGHBOR_E, NEIGHBOR_T, MAX_MESSAGE_SIZE, my_t); 
+  else if (_neighbor) {
+    pong (ROOT_A, ROOT_B, ROOT_C, ROOT_D, ROOT_E, ROOT_T, MAX_MESSAGE_SIZE, my_t);
+    
+  }
+  
+  Delay(1000); // Make sure all processes are done
   MPI_Finalize();
-  return(0);
+  return 0;
 }
 
 
-int send(int * my_c, int bytes) {
-  int rc;
-  int t = 0;
+int ping   ( int      a,
+	     int      b,
+	     int      c, 
+	     int      d, 
+	     int      e, 
+	     int      t,
+	     int      bytes,
+	     int      my_t)
+{
+  int rc =0;
+  int i=0;
+  unsigned long long StartTime=0,EndTime,MeanTime;
+  unsigned long long HWStartTime=0, HWTotalTime=0, HWMeanTime;
+  
+  rc =0;
+ 
   SoftwareBytes_t  SoftwareBytes;
+  memset( &SoftwareBytes, 0x00, sizeof(SoftwareBytes_t) );
+
+  Delay(500000); // Make sure receiver is ready
+  
+  // bit 0 ===> A- Torus FIFO
   uint64_t torusInjectionFifoMap = MUHWI_DESCRIPTOR_TORUS_FIFO_MAP_AP; 
   
   // Set up the memory fifo information structure for message
   // 1.  It is used as input to build a memory fifo descriptor.
-  memset( &t_fifo_info[my_c[5]], 0x00, 
-	  sizeof(t_fifo_info[0]) );
+  memset( &mu_iMemoryFifoDescriptorInfo[my_t], 0x00, 
+	  sizeof(mu_iMemoryFifoDescriptorInfo[0]) );
   
-  MUSPI_SetUpDestination ( &t_fifo_info[my_c[5]].Base.Dest,
-			   my_c[0], my_c[1], my_c[2], my_c[3], my_c[4] );
-  SoftwareBytes.BytesStruct.functionid = t*1;
+  MUSPI_SetUpDestination ( &mu_iMemoryFifoDescriptorInfo[my_t].Base.Dest,
+			   a, b, c, d, e );
+  SoftwareBytes.BytesStruct.functionid = t+1;
   SoftwareBytes.BytesStruct.message_size_in_bytes = bytes;
   
-  msg_BuildPt2PtMemoryFifoInfo ( &t_fifo_info[my_c[5]],
+  msg_BuildPt2PtMemoryFifoInfo ( &mu_iMemoryFifoDescriptorInfo[my_t],
 				 SoftwareBytes,
 				 t*4,   //use the t to isolate the recfifo
 				 0, 
-				 (uint64_t)tsend_buf,
+				 (uint64_t)sbuf,
 				 bytes,
 				 torusInjectionFifoMap,
 				 MUHWI_PACKET_VIRTUAL_CHANNEL_DETERMINISTIC,
@@ -326,23 +442,62 @@ int send(int * my_c, int bytes) {
 				 MUHWI_PACKET_HINT_E_NONE);
   
   rc = MUSPI_CreatePt2PtMemoryFIFODescriptor 
-    ( &(t_fifo[my_c[5]]),
-      &(t_fifo_info[my_c[5]]) );
+    ( &(mu_iMemoryFifoDescriptor[my_t]),
+      &(mu_iMemoryFifoDescriptorInfo[my_t]) );
   
   assert(rc ==0);
+      
+  // -----------------------------------------
+  //    Inject this message into the fifo
+  //    - For a hardware timing, start the timer after the injection.
+  //      The end time is recorded in the context when the packet is received.
+  // ----------------------------------------
+  rc = MUSPI_InjFifoInject (MUSPI_IdToInjFifo(0, &ififo_subgroup[my_t]), 
+			    &mu_iMemoryFifoDescriptor[my_t]);
   
-  rc = MUSPI_InjFifoInject (MUSPI_IdToInjFifo(0, &ififo_subgroup[my_c[5]]), 
-			    &t_fifo[my_c[5]]);
-
+  HWStartTime =  GetTimeBase();
   
-  return(0); 
+  int hops = a + b + c + d + e;
+  printf("ping:  MessageSize=%d, Iterations=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
+         bytes, 1, a, b, c, d, e, hops);
+  
+  return rc;
 }
 
-int recv(int * my_c) {
+
+int pong   ( int      a,
+	     int      b,
+	     int      c, 
+	     int      d, 
+	     int      e, 
+	     int      t,
+	     int      bytes,
+	     int      my_t)
+{
+  int rc =0;
+  int i=0;
+  unsigned long long StartTime,EndTime,MeanTime;
+
+  SoftwareBytes_t  SoftwareBytes;
+  memset( &SoftwareBytes, 0x00, sizeof(SoftwareBytes_t) );
+  
+  rc =0;  
   int rfifoid = 0;
-  while (!my_recv_context[my_c[5]].done) 
-    MUSPI_RecFifoPoll (MUSPI_IdToRecFifo (rfifoid, &rfifo_subgroup[my_c[5]]), 
-		       1000);
 
-  return(0);
+  // ---------------------------------------------
+  //    Reception Side
+  // ---------------------------------------------
+  while (!my_recv_context[my_t].done) 
+    MUSPI_RecFifoPoll (MUSPI_IdToRecFifo (rfifoid, &rfifo_subgroup[my_t]), 
+		       1000);
+  my_recv_context[my_t].done = 0;
+  my_recv_context[my_t].bytes_recvd = 0;    
+
+    
+  int hops = a+b+c+d+e;
+  printf("pong:  MessageSize=%d, Iterations=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
+         bytes, 1, a, b, c, d, e,hops);
+  //  assert(packets_received <= NUM_LOOPS+1);
+  return rc;
 }
+
