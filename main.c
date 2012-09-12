@@ -242,32 +242,9 @@ int main(int argc, char **argv)
   }
 
 
-  int _root = 0, _neighbor = 0; 
-
-  if (my_a == ROOT_A &&
-      my_b == ROOT_B &&
-      my_c == ROOT_C &&
-      my_d == ROOT_D &&
-      my_e == ROOT_E &&
-      my_t == ROOT_T)
-    {
-      printf("We are the root node with coords %d %d %d %d %d %d sending to coords %d %d %d %d %d %d\n",my_a,my_b,my_c,my_d,my_e,my_t,NEIGHBOR_A,NEIGHBOR_B,NEIGHBOR_C,NEIGHBOR_D,NEIGHBOR_E,NEIGHBOR_T);
-      _root = 1;
-    }
-  else if (my_a == NEIGHBOR_A &&
-	   my_b == NEIGHBOR_B &&
-	   my_c == NEIGHBOR_C &&
-	   my_d == NEIGHBOR_D &&
-	   my_e == NEIGHBOR_E &&
-	   my_t == NEIGHBOR_T)
-    {
-      printf("We are the neighbor node with coords %d %d %d %d %d %d\n",my_a,my_b,my_c,my_d,my_e,my_t);      
-      _neighbor = 1;
-    }
-
   // Initializes the send buffer
   for (i=0;i<MAX_MESSAGE_SIZE/8;i++) 
-    sbuf [i] = (uint64_t)(i+4) + 0x0100000000000000ull;
+    sbuf [i] = g_cart_id;
   
   // clears the recv buffer
   for (i=0;i<MAX_MESSAGE_SIZE/8;i++)
@@ -323,43 +300,43 @@ int main(int argc, char **argv)
 
   Kernel_RecFifoEnable ( 0, /* Group ID */ 
 			 recFifoEnableBits );
-  
+
   // Initialize GI Barrier
-  //  MUSPI_GIBarrier_t GIBarrier;  
+  MUSPI_GIBarrier_t GIBarrier;  
   // Initialize the barrier, resetting the hardware.
-  //rc = MUSPI_GIBarrierInit ( &GIBarrier, 0 /* classRouteId */ );
-  //if (rc)
-  //  {
-  //    printf("MUSPI_GIBarrierInit for class route %u returned rc = %d\n",0, rc);
-  //    test_exit(__LINE__);
-  //  }  
-  //if (rc) test_exit(__LINE__);
+  rc = MUSPI_GIBarrierInit ( &GIBarrier, 0 /* classRouteId */ );
+  if (rc)
+    {
+      printf("MUSPI_GIBarrierInit for class route %u returned rc = %d\n",0, rc);
+      test_exit(__LINE__);
+    }  
+  if (rc) test_exit(__LINE__);
   
   // Enter the MU barrier
-  //rc = MUSPI_GIBarrierEnter ( &GIBarrier );
-  //if (rc)
-  //  {
-  //    printf("MUSPI_GIBarrierEnter failed on iteration = %d, returned rc = %d\n", i, rc);
-  //    test_exit(1);
-  //  }
+  rc = MUSPI_GIBarrierEnter ( &GIBarrier );
+  if (rc)
+    {
+      printf("MUSPI_GIBarrierEnter failed on iteration = %d, returned rc = %d\n", i, rc);
+      test_exit(1);
+    }
   
   // Poll for completion of the barrier.
-  //rc = MUSPI_GIBarrierPollWithTimeout ( &GIBarrier, gi_timeout);
-  //if ( rc )
-  //  {
-  //    printf("MUSPI_GIBarrierPollWithTimeout failed on iteration = %d, returned rc = %d\n", i, rc);
-  //    test_exit(1);
-  //  }
-  
-  // Test ping pong
-  if (_root)
-    ping (NEIGHBOR_A, NEIGHBOR_B, NEIGHBOR_C, NEIGHBOR_D, NEIGHBOR_E, NEIGHBOR_T, MAX_MESSAGE_SIZE, my_t); 
-  else if (_neighbor) {
-    pong (ROOT_A, ROOT_B, ROOT_C, ROOT_D, ROOT_E, ROOT_T, MAX_MESSAGE_SIZE, my_t);
-    
+  rc = MUSPI_GIBarrierPollWithTimeout ( &GIBarrier, gi_timeout);
+  if ( rc )
+    {
+      printf("MUSPI_GIBarrierPollWithTimeout failed on iteration = %d, returned rc = %d\n", i, rc);
+      test_exit(1);
+    }
+
+  ping (nbtplus[0], nbtplus[1], nbtplus[2], nbtplus[3], nbtplus[4], nbtplus[5], MAX_MESSAGE_SIZE, my_t); 
+
+  pong (ROOT_A, ROOT_B, ROOT_C, ROOT_D, ROOT_E, ROOT_T, MAX_MESSAGE_SIZE, my_t);
+
+  if(rbuf[0] != g_nb_t_dn) {
+    printf("hmm... %d %d %d\n", g_cart_id, g_nb_t_dn, rbuf[0]);
   }
   
-  Delay(1000); // Make sure all processes are done
+  MPI_Barrier(MPI_COMM_WORLD);
   MPI_Finalize();
   return 0;
 }
@@ -384,7 +361,7 @@ int ping   ( int      a,
   SoftwareBytes_t  SoftwareBytes;
   memset( &SoftwareBytes, 0x00, sizeof(SoftwareBytes_t) );
 
-  Delay(500000); // Make sure receiver is ready
+  //Delay(500000); // Make sure receiver is ready
   
   // bit 0 ===> A- Torus FIFO
   uint64_t torusInjectionFifoMap = MUHWI_DESCRIPTOR_TORUS_FIFO_MAP_AP; 
@@ -427,8 +404,8 @@ int ping   ( int      a,
   HWStartTime =  GetTimeBase();
   
   int hops = a + b + c + d + e;
-  printf("ping:  MessageSize=%d, Iterations=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
-         bytes, 1, a, b, c, d, e, hops);
+  printf("ping:  MessageSize=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
+         bytes, a, b, c, d, e, hops);
   
   return rc;
 }
