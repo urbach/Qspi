@@ -1,8 +1,32 @@
+/* begin_generated_IBM_copyright_prolog                             */
+/*                                                                  */
+/* This is an automatically generated copyright prolog.             */
+/* After initializing,  DO NOT MODIFY OR MOVE                       */
+/* ================================================================ */
+/*                                                                  */
+/* Licensed Materials - Property of IBM                             */
+/*                                                                  */
+/* Blue Gene/Q                                                      */
+/*                                                                  */
+/* (C) Copyright IBM Corp.  2008, 2012                              */
+/*                                                                  */
+/* US Government Users Restricted Rights -                          */
+/* Use, duplication or disclosure restricted                        */
+/* by GSA ADP Schedule Contract with IBM Corp.                      */
+/*                                                                  */
+/* This software is available to you under the                      */
+/* Eclipse Public License (EPL).                                    */
+/*                                                                  */
+/* ================================================================ */
+/*                                                                  */
+/* end_generated_IBM_copyright_prolog                               */
+
+
 #include "spi.h"
 #include <mpi.h>
 
 // The ping and pong functions
-int ping (int a, int b, int c, int d, int e, int t, int bytes, int my_t);
+int ping (int a, int b, int c, int d, int e, int t, int bytes, int my_t, int* mypers);
 int pong (int a, int b, int c, int d, int e, int t, int bytes, int my_t);
 
 #define NUM_LOOPS   1000
@@ -16,6 +40,14 @@ MUHWI_Descriptor_t mu_iMemoryFifoDescriptor[2] __attribute__((__aligned__(64))) 
 
 // Injection Memory FIFO Descriptor Information Structures
 MUSPI_Pt2PtMemoryFIFODescriptorInfo_t mu_iMemoryFifoDescriptorInfo[2];
+
+// destination cache
+struct { 
+  MUHWI_Destination_t dest;
+  uint8_t             hintsABCD;
+  uint8_t             hintsE;
+} nb2dest[8];
+
 
 /**
  * \brief Context for book-keeping on the receiver to process incoming
@@ -71,27 +103,11 @@ int recv_packet (void                       * param,
 MUSPI_InjFifoSubGroup_t   ififo_subgroup[2];
 MUSPI_RecFifoSubGroup_t   rfifo_subgroup[2];
 
-//The source of the ping pong message
-int   ROOT_A = 0;
-int   ROOT_B = 0;
-int   ROOT_C = 0;
-int   ROOT_D = 0;
-int   ROOT_E = 0;
-int   ROOT_T = 0;
-
-//The address of the neighbor that bounces it back
-int   NEIGHBOR_A = 0;
-int   NEIGHBOR_B = 0;
-int   NEIGHBOR_C = 1;
-int   NEIGHBOR_D = 0;
-int   NEIGHBOR_E = 0;
-int   NEIGHBOR_T = 0;
-
 // allocates area for message send buffer
-uint64_t sbuf[MAX_MESSAGE_SIZE/sizeof(uint64_t)];
+double sbuf[MAX_MESSAGE_SIZE/sizeof(double)];
 
 // allocates area for message recv buffer
-uint64_t rbuf[MAX_MESSAGE_SIZE/sizeof(uint64_t)];
+double rbuf[MAX_MESSAGE_SIZE/sizeof(double)];
 
 #define test_exit  exit
 
@@ -243,13 +259,13 @@ int main(int argc, char **argv)
 
 
   // Initializes the send buffer
-  for (i=0;i<MAX_MESSAGE_SIZE/8;i++) 
-    sbuf [i] = g_cart_id;
+  for (i=0;i<MAX_MESSAGE_SIZE/sizeof(double);i++) 
+    sbuf [i] = (double)g_cart_id;
   
   // clears the recv buffer
-  for (i=0;i<MAX_MESSAGE_SIZE/8;i++)
+  for (i=0;i<MAX_MESSAGE_SIZE/sizeof(double);i++)
   {
-    rbuf[i] = 0x00;
+    rbuf[i] = (double)0x00;
   }
   
   // Initialize Injection FIFOs
@@ -328,12 +344,12 @@ int main(int argc, char **argv)
       test_exit(1);
     }
 
-  ping (nbtplus[0], nbtplus[1], nbtplus[2], nbtplus[3], nbtplus[4], nbtplus[5], MAX_MESSAGE_SIZE, my_t); 
+  ping (nbtplus[0], nbtplus[1], nbtplus[2], nbtplus[3], nbtplus[4], nbtplus[5], MAX_MESSAGE_SIZE, my_t, mypers); 
 
-  pong (ROOT_A, ROOT_B, ROOT_C, ROOT_D, ROOT_E, ROOT_T, MAX_MESSAGE_SIZE, my_t);
+  pong (mypers[0], mypers[1], mypers[2], mypers[3], mypers[4], mypers[5], MAX_MESSAGE_SIZE, my_t);
 
-  if(rbuf[0] != g_nb_t_dn) {
-    printf("hmm... %d %d %d\n", g_cart_id, g_nb_t_dn, rbuf[0]);
+  if(((int)rbuf[0]) != g_nb_t_dn) {
+    printf("hmm... %d %d %e\n", g_cart_id, g_nb_t_dn, rbuf[0]);
   }
   
   MPI_Barrier(MPI_COMM_WORLD);
@@ -349,7 +365,8 @@ int ping   ( int      a,
 	     int      e, 
 	     int      t,
 	     int      bytes,
-	     int      my_t)
+	     int      my_t, 
+	     int * mypers)
 {
   int rc =0;
   int i=0;
@@ -403,8 +420,8 @@ int ping   ( int      a,
   
   HWStartTime =  GetTimeBase();
   
-  int hops = a + b + c + d + e;
-  printf("ping:  MessageSize=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
+  int hops = abs(a-mypers[0]) + abs(b-mypers[1]) + abs(c-mypers[2]) + abs(d-mypers[3]) + abs(e-mypers[4]);
+  printf("send:  MessageSize=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
          bytes, a, b, c, d, e, hops);
   
   return rc;
@@ -440,10 +457,50 @@ int pong   ( int      a,
   my_recv_context[my_t].bytes_recvd = 0;    
 
     
-  int hops = a+b+c+d+e;
-  printf("pong:  MessageSize=%d, Iterations=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d, hops=%3d\n",
-         bytes, 1, a, b, c, d, e,hops);
-  //  assert(packets_received <= NUM_LOOPS+1);
+  printf("recv:  MessageSize=%d, a=%3d, b=%3d, c=%3d, d=%3d, e=%3d\n",
+         bytes, a, b, c, d, e);
   return rc;
 }
 
+int get_destinations(int * mypers) {
+
+  int tmp[6];
+  MPI_Status mstatus;
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_t_up, 0, 
+	       (void*)tmp, 6, MPI_INT, g_nb_t_dn, 0,
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[1].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_t_dn, 1, 
+	       (void*)tmp, 6, MPI_INT, g_nb_t_up, 1, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[0].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );
+  
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_x_up, 2, 
+	       (void*)tmp, 6, MPI_INT, g_nb_x_dn, 2, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[3].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_x_dn, 3, 
+	       (void*)tmp, 6, MPI_INT, g_nb_x_up, 3, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[2].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );  
+
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_y_up, 4, 
+	       (void*)tmp, 6, MPI_INT, g_nb_y_dn, 4, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[5].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );  
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_y_dn, 5, 
+	       (void*)tmp, 6, MPI_INT, g_nb_y_up, 5, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[4].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );  
+  
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_z_up, 6, 
+	       (void*)tmp, 6, MPI_INT, g_nb_z_dn, 6, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[7].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );  
+  MPI_Sendrecv((void*)mypers, 6, MPI_INT, g_nb_z_dn, 7, 
+	       (void*)tmp, 6, MPI_INT, g_nb_z_up, 7, 
+	       g_cart_grid, &mstatus);
+  MUSPI_SetUpDestination( &nb2dest[6].dest, tmp[0], tmp[1], tmp[2], tmp[3], tmp[4] );  
+  
+  return(0);
+}
