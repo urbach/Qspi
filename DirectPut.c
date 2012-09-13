@@ -48,6 +48,9 @@ struct {
 // receive counter
 volatile uint64_t recvCounter;
 
+// counter for injected messages
+uint64_t descCount[NUM_INJ_FIFOS];
+
 // base addess table slot for receive buffer and counter
 uint32_t recvBufBatId = 0, recvCntrBatId = 1;
 
@@ -209,17 +212,17 @@ int main(int argc, char **argv) {
     *(double*)&sendBufMemory[n] = (double) g_cart_id;
   }
 
-
-  uint64_t descCount[NUM_INJ_FIFOS];
   double s = 0;
   for(int l = 0; l < N_LOOPS; l++) {
     // reset the recv counter 
     recvCounter = NUM_DIRS*messageSizeInBytes;
     global_barrier(); // make sure everybody is set recv counter
     
-    for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
-      uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
-      for (int j = 0; j < NUM_DIRS; j++) {
+    // direction first as message size will depend on direction
+    for (int j = 0; j < NUM_DIRS; j++) {
+      for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
+	uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
+	
 	muDescriptors[j].Message_Length = msize; 
 	muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
 	MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
@@ -245,17 +248,6 @@ int main(int argc, char **argv) {
     // wait for receive completion
     while ( recvCounter > 0 );
 
-
-    // wait for send completion
-    //unsigned sendDone;
-    //do {
-    //  sendDone = 0;
-    //  for (int j = 0; j < NUM_INJ_FIFOS; j++ )
-    //	sendDone += msg_InjFifoCheckCompletion( injFifoHandle,
-    //						j,
-    //						descCount[j]);
-    //}
-    //while ( sendDone < NUM_INJ_FIFOS );
     if(g_proc_id == -1) printf("Send and receive complete... %d %d\n", g_cart_id, l);
     _bgq_msync(); // Ensure data is available to all cores.  
 
