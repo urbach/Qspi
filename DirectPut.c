@@ -21,7 +21,7 @@ char muDescriptorsMemory[ NUM_INJ_FIFOS * sizeof(MUHWI_Descriptor_t) + 64 ];
 // pointer to descriptor array
 MUHWI_Descriptor_t *muDescriptors;
 
-const int subgroupID = 0;
+const int batsubgroupID = 0;
 int do_dynamic      = 1;
 // Enable different zone routing modes
 uint8_t  zoneRoutingMask = 0;
@@ -109,7 +109,8 @@ int main(int argc, char **argv) {
 
   int g_proc_id;
   char processor_name[MPI_MAX_PROCESSOR_NAME];
-  MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &g_mpi_prov);
+  //MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &g_mpi_prov);
+  MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &g_proc_id);
   if(g_proc_id == 0){
     printf("provided thread support = %d\n", g_mpi_prov);
@@ -202,6 +203,12 @@ int main(int argc, char **argv) {
     alltoall_exit(__LINE__);
   }
 
+  // Fill send buffer
+  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    *(double*)&sendBufMemory[n] = (double) g_cart_id;
+  }
+
+
   uint64_t descCount[NUM_INJ_FIFOS];
   double s = 0;
   for(int l = 0; l < N_LOOPS; l++) {
@@ -248,11 +255,11 @@ int main(int argc, char **argv) {
     _bgq_msync(); // Ensure data is available to all cores.  
 
     // do some computation not hidding communication
-    for(int m = 0; m < 4; m++) {
-      for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
-	s += *(double*)&sendBufMemory[n];
-      }
-    }
+    //for(int m = 0; m < 4; m++) {
+    //  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    //	s += *(double*)&sendBufMemory[n];
+    //  }
+    //}
   }
 
   totalCycles = GetTimeBase() - startTime;
@@ -260,6 +267,7 @@ int main(int argc, char **argv) {
     printf("total cycles per loop= %llu\n", (long long unsigned int) totalCycles/N_LOOPS);
   }
   printf("res for %d is %e\n",g_proc_id, s);
+
   msg_InjFifoTerm ( injFifoHandle );
 
   MPI_Finalize();
@@ -276,7 +284,7 @@ void setup_mregions_bats_counters() {
   uint32_t batIds[2] = { recvBufBatId, recvCntrBatId };
   MUSPI_BaseAddressTableSubGroup_t batSubGrp;
   
-  int rc =  Kernel_AllocateBaseAddressTable( subgroupID/*subgrpId*/,
+  int rc =  Kernel_AllocateBaseAddressTable( batsubgroupID/*subgrpId*/,
 					     &batSubGrp,
 					     2,/*nbatids*/
 					     batIds,
