@@ -1,4 +1,4 @@
-#include "spi.h"
+#include "DirectPut.h"
 #include <mpi.h>
 #include <omp.h>
 
@@ -45,6 +45,9 @@ struct {
   uint8_t             hintsE;
 } nb2dest[NUM_DIRS];
 
+uint64_t messageSizes[NUM_DIRS];
+uint64_t totalMessageSize;
+
 // receive counter
 volatile uint64_t recvCounter;
 
@@ -68,6 +71,9 @@ void create_descriptors();
 void setup_mregions_bats_counters();
 
 MUSPI_GIBarrier_t GIBarrier;
+
+msg_InjFifoHandle_t injFifoHandle;
+
 
 void alltoall_exit(const int rc) {
   exit (rc);
@@ -108,8 +114,6 @@ int g_mpi_prov=0;
 int main(int argc, char **argv) {
   int rc;
   Personality_t pers;
-  //works in cnk ?
-  Kernel_GetPersonality(&pers, sizeof(pers));
 
   int g_proc_id;
   char processor_name[MPI_MAX_PROCESSOR_NAME];
@@ -160,6 +164,14 @@ int main(int argc, char **argv) {
   g_nb_list[6] = g_nb_z_up;  
   g_nb_list[7] = g_nb_z_dn;
 
+
+  totalMessageSize = 0;
+  for(int i = 0; i < NUM_DIRS; i ++) {
+    messageSizes[i] = MAX_MESSAGE_SIZE;
+    totalMessageSize += messageSizes[i];
+  }
+  // get the CNK personality
+  Kernel_GetPersonality(&pers, sizeof(pers));
   int mypers[6];
   mypers[0] = pers.Network_Config.Acoord;
   mypers[1] = pers.Network_Config.Bcoord;
@@ -170,7 +182,6 @@ int main(int argc, char **argv) {
   get_destinations(mypers);
 
   // Setup the FIFO handles
-  msg_InjFifoHandle_t injFifoHandle;
   rc = msg_InjFifoInit ( &injFifoHandle,
 			 0,        /* startingSubgroupId */
 			 0,        /* startingFifoId     */
@@ -208,7 +219,7 @@ int main(int argc, char **argv) {
   }
 
   // Fill send buffer
-  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+  for(int n = 0; n < totalMessageSize/sizeof(double); n+=8) {
     *(double*)&sendBufMemory[n] = (double) g_cart_id;
   }
 
@@ -219,25 +230,26 @@ int main(int argc, char **argv) {
     global_barrier(); // make sure everybody is set recv counter
     
     // direction first as message size will depend on direction
-    for (int j = 0; j < NUM_DIRS; j++) {
-      for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
-	uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
-	
-	muDescriptors[j].Message_Length = msize; 
-	muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
-	MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
-	
-	descCount[ j % NUM_INJ_FIFOS] =
-	  msg_InjFifoInject ( injFifoHandle,
-			      j % NUM_INJ_FIFOS,
-			      &muDescriptors[j]);
-      }
-    }
-
-    // do some computation to hide communication
 #pragma omp parallel reduction(+: s)
     {
-#pragma omp for 
+#pragma omp for nowait
+      for (int j = 0; j < NUM_DIRS; j++) {
+	for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
+	  uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
+	  
+	  muDescriptors[j].Message_Length = msize; 
+	  muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
+	  MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
+	  
+	  descCount[ j ] =
+	    msg_InjFifoInject ( injFifoHandle,
+				j,
+				&muDescriptors[j]);
+	}
+      }
+
+    // do some computation to hide communication
+#pragma omp for
       for(int m = 0; m < 4; m++) {
     	for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
     	  s += *(double*)&sendBufMemory[n];
@@ -275,6 +287,30 @@ int main(int argc, char **argv) {
   return(0);
 }
 
+
+void spi_xchange_halffield() {
+
+  // reset the recv counter 
+  recvCounter = NUM_DIRS*messageSizeInBytes;
+  global_barrier(); // make sure everybody is set recv counter
+  
+  // direction first as message size will depend on direction
+  for (int j = 0; j < NUM_DIRS; j++) {
+    for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
+      uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
+      
+      muDescriptors[j].Message_Length = msize; 
+      muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
+      MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
+      
+      descCount[ j % NUM_INJ_FIFOS] =
+	msg_InjFifoInject ( injFifoHandle,
+			    j % NUM_INJ_FIFOS,
+			    &muDescriptors[j]);
+    }
+  }
+  return;
+}
 
 
 void setup_mregions_bats_counters() {
