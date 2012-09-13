@@ -1,12 +1,13 @@
 #include "spi.h"
 #include <mpi.h>
+#include <omp.h>
 
 #define SEND_BUFFER_ALIGNMENT   128
 #define RECV_BUFFER_ALIGNMENT   128
 #define MAX_MESSAGE_SIZE       32768
 
 // Sub message size
-static int window_size  =  2048;   //  size of submessages
+static int window_size  =  32768;   //  2048 size of submessages
 long long messageSizeInBytes = MAX_MESSAGE_SIZE;
 
 
@@ -186,7 +187,7 @@ int main(int argc, char **argv) {
   setup_mregions_bats_counters();
 
   // Create descriptors
-  // Injection Direct Put Descriptor, one for each neighbor
+  // Injection Direct Put Descriptor, one for each neighbour
   muDescriptors =
     ( MUHWI_Descriptor_t *)(((uint64_t)muDescriptorsMemory+64)&~(64-1));
   create_descriptors();
@@ -231,35 +232,43 @@ int main(int argc, char **argv) {
     }
 
     // do some computation to hide communication
-    //for(int m = 0; m < 4; m++) {
-    //  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
-    //	s += *(double*)&sendBufMemory[n];
-    //  }
-    //}
+#pragma omp parallel reduction(+: s)
+    {
+#pragma omp for 
+      for(int m = 0; m < 4; m++) {
+    	for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    	  s += *(double*)&sendBufMemory[n];
+    	}
+      }
+    }
     
     // wait for receive completion
     while ( recvCounter > 0 );
 
 
     // wait for send completion
-    unsigned sendDone;
-    do {
-      sendDone = 0;
-      for (int j = 0; j < NUM_INJ_FIFOS; j++ )
-	sendDone += msg_InjFifoCheckCompletion( injFifoHandle,
-						j,
-						descCount[j]);
-    }
-    while ( sendDone < NUM_INJ_FIFOS );
+    //unsigned sendDone;
+    //do {
+    //  sendDone = 0;
+    //  for (int j = 0; j < NUM_INJ_FIFOS; j++ )
+    //	sendDone += msg_InjFifoCheckCompletion( injFifoHandle,
+    //						j,
+    //						descCount[j]);
+    //}
+    //while ( sendDone < NUM_INJ_FIFOS );
     if(g_proc_id == -1) printf("Send and receive complete... %d %d\n", g_cart_id, l);
     _bgq_msync(); // Ensure data is available to all cores.  
 
     // do some computation not hidding communication
-    //for(int m = 0; m < 4; m++) {
-    //  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
-    //	s += *(double*)&sendBufMemory[n];
-    //  }
-    //}
+    //#pragma omp parallel  reduction(+: s)
+    //    {
+    //#pragma omp for
+    //      for(int m = 0; m < 4; m++) {
+    //	for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    //	  s += *(double*)&sendBufMemory[n];
+    //	}
+    //      }
+    //    }
   }
 
   totalCycles = GetTimeBase() - startTime;
