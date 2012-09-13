@@ -154,14 +154,21 @@ int main(int argc, char **argv) {
   for(int i = 0; i < NUM_DIRS; i ++) {
     messageSizes[i] = MAX_MESSAGE_SIZE;
     soffsets[i] = totalMessageSize;
-    if(i%2 == 0) {
-      roffsets[i] = totalMessageSize + messageSizes[i+1];
-    }
-    else {
-      roffsets[i] = totalMessageSize - messageSizes[i];
-    }
     totalMessageSize += messageSizes[i];
   }
+  for(int i = 0; i < NUM_DIRS; i++) {
+    // forward here is backward on the right neighbour
+    // and the other way around...
+    if(i%2 == 0) {
+      roffsets[i] = soffsets[i] + messageSizes[i];
+    }
+    else {
+      roffsets[i] = soffsets[i] - messageSizes[i-1];
+    }
+    // for testing
+    //roffsets[i] = soffsets[i];
+  }
+
   // get the CNK personality
   Kernel_GetPersonality(&pers, sizeof(pers));
   int mypers[6];
@@ -211,8 +218,8 @@ int main(int argc, char **argv) {
   }
 
   // Fill send buffer
-  for(int n = 0; n < totalMessageSize/sizeof(double); n+=8) {
-    *(double*)&sendBufMemory[n] = (double) g_cart_id;
+  for(int n = 0; n < totalMessageSize/sizeof(double); n+=sizeof(double)) {
+    *(double*)&sendBuffers[n] = (double) g_cart_id;
   }
 
   double s = 0;
@@ -221,27 +228,29 @@ int main(int argc, char **argv) {
     recvCounter = totalMessageSize;
     global_barrier(); // make sure everybody is set recv counter
     
-#pragma omp parallel reduction(+: s)
-    {
-#pragma omp for nowait
+    //#pragma omp for nowait
       for (int j = 0; j < NUM_DIRS; j++) {
 	uint64_t msize = messageSizes[j];
 	  
 	muDescriptors[j].Message_Length = msize; 
-	muDescriptors[j].Pa_Payload    =  sendBufPAddr + soffsets[j];
+	//muDescriptors[j].Pa_Payload    =  sendBufPAddr + soffsets[j];
+	muDescriptors[j].Pa_Payload    =  sendBufPAddr;
 	MUSPI_SetRecPutOffset (&muDescriptors[j], roffsets[j]);
-	
+	//MUSPI_SetRecPutOffset (&muDescriptors[j], 0);
 	descCount[ j ] =
 	  msg_InjFifoInject ( injFifoHandle,
 			      j,
 			      &muDescriptors[j]);
       }
 
+#pragma omp parallel reduction(+: s)
+    {
+
     // do some computation to hide communication
 #pragma omp for
       for(int m = 0; m < 4; m++) {
     	for(int n = 0; n < totalMessageSize/sizeof(double); n+=8) {
-    	  s += *(double*)&sendBufMemory[n];
+    	  s += *(double*)&sendBuffers[n];
     	}
       }
     }
@@ -265,8 +274,25 @@ int main(int argc, char **argv) {
   }
 
   totalCycles = GetTimeBase() - startTime;
-  if(g_proc_id == 0) {
+
+  if(g_nb_t_up != (int)*(double*)&recvBuffers[soffsets[0]] ||
+     g_nb_t_dn != (int)*(double*)&recvBuffers[soffsets[1]] ||
+     g_nb_x_up != (int)*(double*)&recvBuffers[soffsets[2]] ||
+     g_nb_x_dn != (int)*(double*)&recvBuffers[soffsets[3]] ||
+     g_nb_y_up != (int)*(double*)&recvBuffers[soffsets[4]] ||
+     g_nb_y_dn != (int)*(double*)&recvBuffers[soffsets[5]] ||
+     g_nb_z_up != (int)*(double*)&recvBuffers[soffsets[6]] ||
+     g_nb_z_dn != (int)*(double*)&recvBuffers[soffsets[7]]) {
+    printf("neighbours wrong for %d !\n", g_cart_id);
     printf("total cycles per loop= %llu\n", (long long unsigned int) totalCycles/N_LOOPS);
+    printf("t+ %d %d\n", g_nb_t_up, (int)*(double*)&recvBuffers[soffsets[0]]);
+    printf("t- %d %d\n", g_nb_t_dn, (int)*(double*)&recvBuffers[soffsets[1]]);
+    printf("x+ %d %d\n", g_nb_x_up, (int)*(double*)&recvBuffers[soffsets[2]]);
+    printf("x- %d %d\n", g_nb_x_dn, (int)*(double*)&recvBuffers[soffsets[3]]);
+    printf("y+ %d %d\n", g_nb_y_up, (int)*(double*)&recvBuffers[soffsets[4]]);
+    printf("y- %d %d\n", g_nb_y_dn, (int)*(double*)&recvBuffers[soffsets[5]]);
+    printf("z+ %d %d\n", g_nb_z_up, (int)*(double*)&recvBuffers[soffsets[6]]);
+    printf("z- %d %d\n", g_nb_z_dn, (int)*(double*)&recvBuffers[soffsets[7]]);
   }
   printf("res for %d is %e\n",g_proc_id, s);
 
