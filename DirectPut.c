@@ -45,7 +45,9 @@ struct {
   uint8_t             hintsE;
 } nb2dest[NUM_DIRS];
 
+// in bytes
 uint64_t messageSizes[NUM_DIRS];
+uint64_t roffsets[NUM_DIRS], soffsets[NUM_DIRS];
 uint64_t totalMessageSize;
 
 // receive counter
@@ -74,30 +76,13 @@ MUSPI_GIBarrier_t GIBarrier;
 
 msg_InjFifoHandle_t injFifoHandle;
 
+void global_barrier();
 
 void alltoall_exit(const int rc) {
   exit (rc);
   return;
 }
 
-void global_barrier() {
-  int rc = 0;
-  uint64_t timeoutCycles = 60UL * 1600000000UL; // about 60 sec at 1.6 ghz
-  rc = MUSPI_GIBarrierEnter ( &GIBarrier );
-  if (rc) {
-    printf("MUSPI_GIBarrierEnter failed returned rc = %d\n", rc);
-    alltoall_exit(1);
-  }
-  
-  // Poll for completion of the barrier.
-  rc = MUSPI_GIBarrierPollWithTimeout ( &GIBarrier, timeoutCycles);
-  if( rc ) {
-    printf("MUSPI_GIBarrierPollWithTimeout failed returned rc = %d\n", rc);
-    DelayTimeBase (200000000000UL);
-    alltoall_exit(1);
-  }
-  return;
-}
 
 // here come the MPI variables
 int g_proc_id, g_nproc, g_cart_id, g_proc_coords[4], g_nb_list[8];
@@ -168,6 +153,13 @@ int main(int argc, char **argv) {
   totalMessageSize = 0;
   for(int i = 0; i < NUM_DIRS; i ++) {
     messageSizes[i] = MAX_MESSAGE_SIZE;
+    soffsets[i] = totalMessageSize;
+    if(i%2 == 0) {
+      roffsets[i] = totalMessageSize + messageSizes[i+1];
+    }
+    else {
+      roffsets[i] = totalMessageSize - messageSizes[i];
+    }
     totalMessageSize += messageSizes[i];
   }
   // get the CNK personality
@@ -226,32 +218,29 @@ int main(int argc, char **argv) {
   double s = 0;
   for(int l = 0; l < N_LOOPS; l++) {
     // reset the recv counter 
-    recvCounter = NUM_DIRS*messageSizeInBytes;
+    recvCounter = totalMessageSize;
     global_barrier(); // make sure everybody is set recv counter
     
-    // direction first as message size will depend on direction
 #pragma omp parallel reduction(+: s)
     {
 #pragma omp for nowait
       for (int j = 0; j < NUM_DIRS; j++) {
-	for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
-	  uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
+	uint64_t msize = messageSizes[j];
 	  
-	  muDescriptors[j].Message_Length = msize; 
-	  muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
-	  MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
-	  
-	  descCount[ j ] =
-	    msg_InjFifoInject ( injFifoHandle,
-				j,
-				&muDescriptors[j]);
-	}
+	muDescriptors[j].Message_Length = msize; 
+	muDescriptors[j].Pa_Payload    =  sendBufPAddr + soffsets[j];
+	MUSPI_SetRecPutOffset (&muDescriptors[j], roffsets[j]);
+	
+	descCount[ j ] =
+	  msg_InjFifoInject ( injFifoHandle,
+			      j,
+			      &muDescriptors[j]);
       }
 
     // do some computation to hide communication
 #pragma omp for
       for(int m = 0; m < 4; m++) {
-    	for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    	for(int n = 0; n < totalMessageSize/sizeof(double); n+=8) {
     	  s += *(double*)&sendBufMemory[n];
     	}
       }
@@ -421,14 +410,14 @@ void create_descriptors() {
  
   // loop over directions
   // CHECK offset needs to be adjusted for QCD case
-  for(int i = 0, offset = 0; i < 8; i++, offset += messageSizeInBytes) {
+  for(int i = 0; i < 8; i++) {
     // Injection Direct Put Descriptor Information Structure
     MUSPI_Pt2PtDirectPutDescriptorInfo_t dinfo;
     
     memset( (void*)&dinfo, 0x00, sizeof(dinfo) );
       
-    dinfo.Base.Payload_Address = sendBufPAddr + offset;
-    dinfo.Base.Message_Length  = messageSizeInBytes;
+    dinfo.Base.Payload_Address = sendBufPAddr + soffsets[i];
+    dinfo.Base.Message_Length  = messageSizes[i];
     dinfo.Base.Torus_FIFO_Map  = anyFifoMap;
       
     dinfo.Base.Dest = nb2dest[i].dest;
@@ -465,7 +454,7 @@ void create_descriptors() {
     
     dinfo.Pt2Pt.Skip  = 8; // for checksumming, skip the header 	      
     dinfo.DirectPut.Rec_Payload_Base_Address_Id = recvBufBatId;
-    dinfo.DirectPut.Rec_Payload_Offset          = offset;
+    dinfo.DirectPut.Rec_Payload_Offset          = roffsets[i];
     dinfo.DirectPut.Rec_Counter_Base_Address_Id = recvCntrBatId;
     dinfo.DirectPut.Rec_Counter_Offset          = 0;
       
@@ -685,4 +674,24 @@ int msg_InjFifoInit ( msg_InjFifoHandle_t *injFifoHandlePtr,
   
   injFifoHandlePtr->pOpaqueObject = (void *)info;
   return 0;
+}
+
+
+void global_barrier() {
+  int rc = 0;
+  uint64_t timeoutCycles = 60UL * 1600000000UL; // about 60 sec at 1.6 ghz
+  rc = MUSPI_GIBarrierEnter ( &GIBarrier );
+  if (rc) {
+    printf("MUSPI_GIBarrierEnter failed returned rc = %d\n", rc);
+    alltoall_exit(1);
+  }
+  
+  // Poll for completion of the barrier.
+  rc = MUSPI_GIBarrierPollWithTimeout ( &GIBarrier, timeoutCycles);
+  if( rc ) {
+    printf("MUSPI_GIBarrierPollWithTimeout failed returned rc = %d\n", rc);
+    DelayTimeBase (200000000000UL);
+    alltoall_exit(1);
+  }
+  return;
 }
