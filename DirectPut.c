@@ -11,11 +11,12 @@ long long messageSizeInBytes = MAX_MESSAGE_SIZE;
 
 
 // we have four directions and forward/backward
-#define NUM_INJ_FIFOS          8
-#define INJ_MEMORY_FIFO_SIZE  ((64*8) -1)
+#define NUM_DIRS               8
+#define NUM_INJ_FIFOS          NUM_DIRS
+#define INJ_MEMORY_FIFO_SIZE  ((64*1024) -1)
 
 // Allocate static memory for descriptors
-char muDescriptorsMemory[ 8 * sizeof(MUHWI_Descriptor_t) + 64 ];
+char muDescriptorsMemory[ NUM_INJ_FIFOS * sizeof(MUHWI_Descriptor_t) + 64 ];
 // pointer to descriptor array
 MUHWI_Descriptor_t *muDescriptors;
 
@@ -28,8 +29,8 @@ uint8_t stayOnBubbleMask  = 0;
 unsigned stayOnBubbleFlag = 0;
 
 // Allocate static memory for send and receive buffers
-char sendBufMemory[8 * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
-char recvBufMemory[8 * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
+char sendBufMemory[NUM_DIRS * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
+char recvBufMemory[NUM_DIRS * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
 // pointers to send and receive buffers
 char * recvBuffers;
 char * sendBuffers;
@@ -39,7 +40,7 @@ struct {
   MUHWI_Destination_t dest;
   uint8_t             hintsABCD;
   uint8_t             hintsE;
-} nb2dest[8];
+} nb2dest[NUM_DIRS];
 
 // receive counter
 volatile uint64_t recvCounter;
@@ -195,19 +196,16 @@ int main(int argc, char **argv) {
 
   uint64_t descCount[NUM_INJ_FIFOS];
   // reset the recv counter 
-  recvCounter = 8*messageSizeInBytes;
+  recvCounter = NUM_DIRS*messageSizeInBytes;
   global_barrier(); // make sure everybody is set recv counter
   printf("Made it here %d\n", g_cart_id);
 
   for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
     uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
-    for (int j = 0; j < 8; j++) {
-      int k;
-      if(j %2 == 0) k = j+1;
-      else k = j-1;
+    for (int j = 0; j < NUM_DIRS; j++) {
       muDescriptors[j].Message_Length = msize; 
       muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
-      MUSPI_SetRecPutOffset (&muDescriptors[j],  k*messageSizeInBytes + bytes);
+      MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
       
       descCount[ j % NUM_INJ_FIFOS] =
 	msg_InjFifoInject ( injFifoHandle,
@@ -215,11 +213,11 @@ int main(int argc, char **argv) {
 			    &muDescriptors[j]);
     }
   }
-  printf("Send my stuff %d\n", g_cart_id);
+  printf("Put my stuff into fifo%d\n", g_cart_id);
   // wait for receive completion
-  //while ( recvCounter > 0 );
+  while ( recvCounter > 0 );
 
-  //printf("Received everything... %d\n", g_cart_id);
+  printf("Received everything... %d\n", g_cart_id);
   // wait for send completion
   unsigned sendDone;
   do {
@@ -243,7 +241,7 @@ int main(int argc, char **argv) {
 
 
 void setup_mregions_bats_counters() {
-  const uint64_t buffersSize =  8 * messageSizeInBytes;
+  const uint64_t buffersSize =  NUM_DIRS * messageSizeInBytes;
 
   // allocate bat entries for the recive buffer and the receive counter
   
@@ -394,7 +392,7 @@ void create_descriptors() {
     
     dinfo.Pt2Pt.Skip  = 8; // for checksumming, skip the header 	      
     dinfo.DirectPut.Rec_Payload_Base_Address_Id = recvBufBatId;
-    dinfo.DirectPut.Rec_Payload_Offset          = 0;
+    dinfo.DirectPut.Rec_Payload_Offset          = offset;
     dinfo.DirectPut.Rec_Counter_Base_Address_Id = recvCntrBatId;
     dinfo.DirectPut.Rec_Counter_Offset          = 0;
       
