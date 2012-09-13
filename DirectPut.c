@@ -14,12 +14,14 @@ long long messageSizeInBytes = MAX_MESSAGE_SIZE;
 #define NUM_DIRS               8
 #define NUM_INJ_FIFOS          NUM_DIRS
 #define INJ_MEMORY_FIFO_SIZE  ((64*1024) -1)
+#define N_LOOPS                10000
 
 // Allocate static memory for descriptors
 char muDescriptorsMemory[ NUM_INJ_FIFOS * sizeof(MUHWI_Descriptor_t) + 64 ];
 // pointer to descriptor array
 MUHWI_Descriptor_t *muDescriptors;
 
+const int subgroupID = 0;
 int do_dynamic      = 1;
 // Enable different zone routing modes
 uint8_t  zoneRoutingMask = 0;
@@ -95,7 +97,7 @@ int g_nb_x_up, g_nb_x_dn;
 int g_nb_y_up, g_nb_y_dn;
 int g_nb_t_up, g_nb_t_dn;
 int g_nb_z_up, g_nb_z_dn;
-
+int g_mpi_prov=0;
 
 
 
@@ -107,9 +109,11 @@ int main(int argc, char **argv) {
 
   int g_proc_id;
   char processor_name[MPI_MAX_PROCESSOR_NAME];
-  MPI_Init(&argc, &argv);
+  MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &g_mpi_prov);
   MPI_Comm_rank(MPI_COMM_WORLD, &g_proc_id);
-
+  if(g_proc_id == 0){
+    printf("provided thread support = %d\n", g_mpi_prov);
+  }
   int periods[] = {1,1,1,1};
   int namelen;
   int ndims = 4;
@@ -186,6 +190,10 @@ int main(int argc, char **argv) {
     ( MUHWI_Descriptor_t *)(((uint64_t)muDescriptorsMemory+64)&~(64-1));
   create_descriptors();
 
+  uint64_t totalCycles=0;
+  uint64_t startTime=0;
+  startTime = GetTimeBase();
+
   // Initialize the barrier, resetting the hardware.
   rc = MUSPI_GIBarrierInit ( &GIBarrier, 0 /*comm world class route */);
 
@@ -195,43 +203,63 @@ int main(int argc, char **argv) {
   }
 
   uint64_t descCount[NUM_INJ_FIFOS];
-  // reset the recv counter 
-  recvCounter = NUM_DIRS*messageSizeInBytes;
-  global_barrier(); // make sure everybody is set recv counter
-  printf("Made it here %d\n", g_cart_id);
+  double s = 0;
+  for(int l = 0; l < N_LOOPS; l++) {
+    // reset the recv counter 
+    recvCounter = NUM_DIRS*messageSizeInBytes;
+    global_barrier(); // make sure everybody is set recv counter
+    
+    for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
+      uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
+      for (int j = 0; j < NUM_DIRS; j++) {
+	muDescriptors[j].Message_Length = msize; 
+	muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
+	MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
+	
+	descCount[ j % NUM_INJ_FIFOS] =
+	  msg_InjFifoInject ( injFifoHandle,
+			      j % NUM_INJ_FIFOS,
+			      &muDescriptors[j]);
+      }
+    }
 
-  for (uint64_t bytes = 0; bytes < messageSizeInBytes; bytes += window_size) {
-    uint64_t msize = (bytes <= messageSizeInBytes - window_size) ? window_size : (messageSizeInBytes - bytes);
-    for (int j = 0; j < NUM_DIRS; j++) {
-      muDescriptors[j].Message_Length = msize; 
-      muDescriptors[j].Pa_Payload    =  sendBufPAddr + (messageSizeInBytes * j) + bytes;
-      MUSPI_SetRecPutOffset (&muDescriptors[j], (messageSizeInBytes * j) +  bytes);
-      
-      descCount[ j % NUM_INJ_FIFOS] =
-	msg_InjFifoInject ( injFifoHandle,
-			    j % NUM_INJ_FIFOS,
-			    &muDescriptors[j]);
+    // do some computation to hide communication
+    //for(int m = 0; m < 4; m++) {
+    //  for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+    //	s += *(double*)&sendBufMemory[n];
+    //  }
+    //}
+    
+    // wait for receive completion
+    while ( recvCounter > 0 );
+
+
+    // wait for send completion
+    unsigned sendDone;
+    do {
+      sendDone = 0;
+      for (int j = 0; j < NUM_INJ_FIFOS; j++ )
+	sendDone += msg_InjFifoCheckCompletion( injFifoHandle,
+						j,
+						descCount[j]);
+    }
+    while ( sendDone < NUM_INJ_FIFOS );
+    if(g_proc_id == -1) printf("Send and receive complete... %d %d\n", g_cart_id, l);
+    _bgq_msync(); // Ensure data is available to all cores.  
+
+    // do some computation not hidding communication
+    for(int m = 0; m < 4; m++) {
+      for(int n = 0; n < NUM_DIRS * MAX_MESSAGE_SIZE/sizeof(double); n+=8) {
+	s += *(double*)&sendBufMemory[n];
+      }
     }
   }
-  printf("Put my stuff into fifo%d\n", g_cart_id);
-  // wait for receive completion
-  while ( recvCounter > 0 );
 
-  printf("Received everything... %d\n", g_cart_id);
-  // wait for send completion
-  unsigned sendDone;
-  do {
-    sendDone = 0;
-    for (int j = 0; j < NUM_INJ_FIFOS; j++ )
-      sendDone += msg_InjFifoCheckCompletion( injFifoHandle,
-					      j,
-					      descCount[j]);
-    if(g_cart_id == 0) printf("sendDone = %d\n", sendDone);
+  totalCycles = GetTimeBase() - startTime;
+  if(g_proc_id == 0) {
+    printf("total cycles per loop= %llu\n", (long long unsigned int) totalCycles/N_LOOPS);
   }
-  while ( sendDone < NUM_INJ_FIFOS );
-  printf("Send complete... %d\n", g_cart_id);
-  _bgq_msync(); // Ensure data is available to all cores.  
-
+  printf("res for %d is %e\n",g_proc_id, s);
   msg_InjFifoTerm ( injFifoHandle );
 
   MPI_Finalize();
@@ -248,7 +276,7 @@ void setup_mregions_bats_counters() {
   uint32_t batIds[2] = { recvBufBatId, recvCntrBatId };
   MUSPI_BaseAddressTableSubGroup_t batSubGrp;
   
-  int rc =  Kernel_AllocateBaseAddressTable( 0/*subgrpId*/,
+  int rc =  Kernel_AllocateBaseAddressTable( subgroupID/*subgrpId*/,
 					     &batSubGrp,
 					     2,/*nbatids*/
 					     batIds,
