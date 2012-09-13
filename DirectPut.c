@@ -153,6 +153,7 @@ int main(int argc, char **argv) {
   totalMessageSize = 0;
   for(int i = 0; i < NUM_DIRS; i ++) {
     messageSizes[i] = MAX_MESSAGE_SIZE;
+    if(i == 1 || i == 0) messageSizes[i] = MAX_MESSAGE_SIZE/2;
     soffsets[i] = totalMessageSize;
     totalMessageSize += messageSizes[i];
   }
@@ -329,7 +330,7 @@ void spi_xchange_halffield() {
 
 
 void setup_mregions_bats_counters() {
-  const uint64_t buffersSize =  NUM_DIRS * messageSizeInBytes;
+  const uint64_t buffersSize =  totalMessageSize;
 
   // allocate bat entries for the recive buffer and the receive counter
   
