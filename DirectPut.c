@@ -12,7 +12,6 @@ long long messageSizeInBytes = MAX_MESSAGE_SIZE;
 
 
 // we have four directions and forward/backward
-#define NUM_DIRS               8
 #define NUM_INJ_FIFOS          NUM_DIRS
 #define INJ_MEMORY_FIFO_SIZE  ((64*1024) -1)
 #define N_LOOPS                10000
@@ -35,8 +34,8 @@ unsigned stayOnBubbleFlag = 0;
 char sendBufMemory[NUM_DIRS * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
 char recvBufMemory[NUM_DIRS * MAX_MESSAGE_SIZE+ SEND_BUFFER_ALIGNMENT];
 // pointers to send and receive buffers
-char * recvBuffers;
-char * sendBuffers;
+char * SPIrecvBuffers;
+char * SPIsendBuffers;
 
 // neighbour destination cache
 struct { 
@@ -154,6 +153,7 @@ int main(int argc, char **argv) {
   for(int i = 0; i < NUM_DIRS; i ++) {
     messageSizes[i] = MAX_MESSAGE_SIZE;
     if(i == 1 || i == 0) messageSizes[i] = MAX_MESSAGE_SIZE/2;
+    if(i == 2 || i == 3) messageSizes[i] += MAX_MESSAGE_SIZE/2;
     soffsets[i] = totalMessageSize;
     totalMessageSize += messageSizes[i];
   }
@@ -194,8 +194,8 @@ int main(int argc, char **argv) {
     alltoall_exit(1);
   }
 
-  recvBuffers = (char *)(((uint64_t)recvBufMemory+RECV_BUFFER_ALIGNMENT)&~(RECV_BUFFER_ALIGNMENT-1));    
-  sendBuffers = (char *)(((uint64_t)sendBufMemory+SEND_BUFFER_ALIGNMENT)&~(SEND_BUFFER_ALIGNMENT-1));
+  SPIrecvBuffers = (char *)(((uint64_t)recvBufMemory+RECV_BUFFER_ALIGNMENT)&~(RECV_BUFFER_ALIGNMENT-1));    
+  SPIsendBuffers = (char *)(((uint64_t)sendBufMemory+SEND_BUFFER_ALIGNMENT)&~(SEND_BUFFER_ALIGNMENT-1));
 
   // Set up base address table for reception counter and buffer
   setup_mregions_bats_counters();
@@ -220,7 +220,7 @@ int main(int argc, char **argv) {
 
   // Fill send buffer
   for(int n = 0; n < totalMessageSize/sizeof(double); n+=sizeof(double)) {
-    *(double*)&sendBuffers[n] = (double) g_cart_id;
+    *(double*)&SPIsendBuffers[n] = (double) g_cart_id;
   }
 
   double s = 0;
@@ -251,7 +251,7 @@ int main(int argc, char **argv) {
 #pragma omp for
       for(int m = 0; m < 4; m++) {
     	for(int n = 0; n < totalMessageSize/sizeof(double); n+=8) {
-    	  s += *(double*)&sendBuffers[n];
+    	  s += *(double*)&SPIsendBuffers[n];
     	}
       }
     }
@@ -276,24 +276,24 @@ int main(int argc, char **argv) {
 
   totalCycles = GetTimeBase() - startTime;
 
-  if(g_nb_t_up != (int)*(double*)&recvBuffers[soffsets[0]] ||
-     g_nb_t_dn != (int)*(double*)&recvBuffers[soffsets[1]] ||
-     g_nb_x_up != (int)*(double*)&recvBuffers[soffsets[2]] ||
-     g_nb_x_dn != (int)*(double*)&recvBuffers[soffsets[3]] ||
-     g_nb_y_up != (int)*(double*)&recvBuffers[soffsets[4]] ||
-     g_nb_y_dn != (int)*(double*)&recvBuffers[soffsets[5]] ||
-     g_nb_z_up != (int)*(double*)&recvBuffers[soffsets[6]] ||
-     g_nb_z_dn != (int)*(double*)&recvBuffers[soffsets[7]]) {
+  if(g_nb_t_up != (int)*(double*)&SPIrecvBuffers[soffsets[0]] ||
+     g_nb_t_dn != (int)*(double*)&SPIrecvBuffers[soffsets[1]] ||
+     g_nb_x_up != (int)*(double*)&SPIrecvBuffers[soffsets[2]] ||
+     g_nb_x_dn != (int)*(double*)&SPIrecvBuffers[soffsets[3]] ||
+     g_nb_y_up != (int)*(double*)&SPIrecvBuffers[soffsets[4]] ||
+     g_nb_y_dn != (int)*(double*)&SPIrecvBuffers[soffsets[5]] ||
+     g_nb_z_up != (int)*(double*)&SPIrecvBuffers[soffsets[6]] ||
+     g_nb_z_dn != (int)*(double*)&SPIrecvBuffers[soffsets[7]]) {
     printf("neighbours wrong for %d !\n", g_cart_id);
     printf("total cycles per loop= %llu\n", (long long unsigned int) totalCycles/N_LOOPS);
-    printf("t+ %d %d\n", g_nb_t_up, (int)*(double*)&recvBuffers[soffsets[0]]);
-    printf("t- %d %d\n", g_nb_t_dn, (int)*(double*)&recvBuffers[soffsets[1]]);
-    printf("x+ %d %d\n", g_nb_x_up, (int)*(double*)&recvBuffers[soffsets[2]]);
-    printf("x- %d %d\n", g_nb_x_dn, (int)*(double*)&recvBuffers[soffsets[3]]);
-    printf("y+ %d %d\n", g_nb_y_up, (int)*(double*)&recvBuffers[soffsets[4]]);
-    printf("y- %d %d\n", g_nb_y_dn, (int)*(double*)&recvBuffers[soffsets[5]]);
-    printf("z+ %d %d\n", g_nb_z_up, (int)*(double*)&recvBuffers[soffsets[6]]);
-    printf("z- %d %d\n", g_nb_z_dn, (int)*(double*)&recvBuffers[soffsets[7]]);
+    printf("t+ %d %d\n", g_nb_t_up, (int)*(double*)&SPIrecvBuffers[soffsets[0]]);
+    printf("t- %d %d\n", g_nb_t_dn, (int)*(double*)&SPIrecvBuffers[soffsets[1]]);
+    printf("x+ %d %d\n", g_nb_x_up, (int)*(double*)&SPIrecvBuffers[soffsets[2]]);
+    printf("x- %d %d\n", g_nb_x_dn, (int)*(double*)&SPIrecvBuffers[soffsets[3]]);
+    printf("y+ %d %d\n", g_nb_y_up, (int)*(double*)&SPIrecvBuffers[soffsets[4]]);
+    printf("y- %d %d\n", g_nb_y_dn, (int)*(double*)&SPIrecvBuffers[soffsets[5]]);
+    printf("z+ %d %d\n", g_nb_z_up, (int)*(double*)&SPIrecvBuffers[soffsets[6]]);
+    printf("z- %d %d\n", g_nb_z_dn, (int)*(double*)&SPIrecvBuffers[soffsets[7]]);
   }
   printf("res for %d is %e\n",g_proc_id, s);
 
@@ -351,7 +351,7 @@ void setup_mregions_bats_counters() {
   // Receive buffer bat is set to the PA addr of the receive buffer
   Kernel_MemoryRegion_t memRegion;
   rc = Kernel_CreateMemoryRegion ( &memRegion,
-				   recvBuffers,
+				   SPIrecvBuffers,
 				   buffersSize);
   if ( rc != 0) {
     printf("Kernel_CreateMemoryRegion failed with rc=%d\n",rc);
@@ -359,7 +359,7 @@ void setup_mregions_bats_counters() {
   }
   
   uint64_t paAddr = 
-    (uint64_t)recvBuffers - 
+    (uint64_t)SPIrecvBuffers - 
     (uint64_t)memRegion.BaseVa + 
     (uint64_t)memRegion.BasePa;
   
@@ -404,7 +404,7 @@ void setup_mregions_bats_counters() {
   
   // Get the send buffers physical address
   rc = Kernel_CreateMemoryRegion ( &memRegion,
-				   sendBuffers,
+				   SPIsendBuffers,
 				   buffersSize);
   if(rc != 0) {
     printf("Kernel_CreateMemoryRegion failed with rc=%d\n",rc);
@@ -412,7 +412,7 @@ void setup_mregions_bats_counters() {
   }
   
   sendBufPAddr = 
-    (uint64_t)sendBuffers - 
+    (uint64_t)SPIsendBuffers - 
     (uint64_t)memRegion.BaseVa + 
     (uint64_t)memRegion.BasePa;
   return;

@@ -44,6 +44,13 @@
 #include <spi/include/kernel/process.h>
 #include <spi/include/kernel/location.h>
 
+#define NUM_DIRS               8
+
+// pointers to send and receive buffers
+extern char * SPIrecvBuffers;
+extern char * SPIsendBuffers;
+extern MUHWI_Descriptor_t *muDescriptors;
+
 /**
  * \brief Injection Fifo Handle
  *
